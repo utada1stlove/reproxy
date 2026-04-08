@@ -1,0 +1,2 @@
+# Include this inside nginx.conf or a site-enabled file under the `http {}` block.
+include /etc/nginx/conf.d/reproxy.conf;
