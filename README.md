@@ -50,8 +50,9 @@ MVP 只解决最核心的一件事：
 3. 检查每个域名的证书文件是否存在
 4. 生成 `deployments/nginx/reproxy.conf`
 5. 如已配置，则执行证书申请命令、Nginx 配置校验和 reload 命令
-6. 记录最近一次同步、校验、reload、证书申请状态
-7. 对外暴露 `/healthz`、`/status`、`/routes` 与 `/panel/`
+6. 如果启动阶段同步失败，服务仍会继续启动，并通过 `/status` 暴露 `degraded` 状态
+7. 记录最近一次同步、校验、reload、证书申请状态
+8. 对外暴露 `/healthz`、`/status`、`/routes` 与 `/panel/`
 
 当证书未就绪时，域名路由会先生成 HTTP server block，并保留 challenge 所需路径；证书文件存在后，会自动生成 443 server block，并把 80 跳转到 HTTPS。端口监听路由则直接生成指定端口的反向代理配置。
 
@@ -149,13 +150,18 @@ export REPROXY_STORAGE_PATH=./data/routes.json
 export REPROXY_NGINX_CONFIG_PATH=./deployments/nginx/reproxy.conf
 export REPROXY_ACME_WEBROOT=/tmp/reproxy-acme
 export REPROXY_CERTS_DIR=/etc/letsencrypt/live
-export REPROXY_ADMIN_EMAIL=ops@example.com
+export REPROXY_ADMIN_EMAIL='admin@your-real-domain.tld'
 export REPROXY_CERT_PROVIDER=cloudflare
 export REPROXY_CLOUDFLARE_API_TOKEN=replace-with-your-token
 export REPROXY_CLOUDFLARE_CREDENTIALS_PATH=/etc/letsencrypt/cloudflare.ini
 export REPROXY_VALIDATE_COMMAND='nginx -t'
 export REPROXY_RELOAD_COMMAND='nginx -s reload'
 ```
+
+注意：
+- `REPROXY_ADMIN_EMAIL` 必须是真实可用的邮箱地址，不能直接照抄 `example.com`
+- 当 `REPROXY_CERT_PROVIDER=cloudflare` 时，应保持 `REPROXY_CERT_COMMAND_TEMPLATE` 为空，让系统走内置的 `dns-cloudflare` 命令
+- Cloudflare 模式需要预先安装 Certbot 的 `dns-cloudflare` 插件；使用 bootstrap 时带上 `REPROXY_INSTALL_CERTBOT_CLOUDFLARE=1`
 
 如果你不想使用 Cloudflare 内置路径，也可以改回自定义证书命令：
 
@@ -223,6 +229,7 @@ curl http://127.0.0.1:8080/status
 `/status` 会返回：
 - 路由总数
 - TLS ready 路由数
+- 当前是否处于 `ok` 或 `degraded`
 - 最近一次同步是否成功
 - 最近一次校验、reload、证书申请的时间和错误
 

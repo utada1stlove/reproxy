@@ -112,6 +112,12 @@ Reason:
 - Cloudflare is a common provider and worth first-class handling
 - keeping it in runtime config is still lighter than embedding a full ACME client
 
+### Decision 14: Keep the API available when startup sync fails
+Reason:
+- certificate issuance or reload failures should not lock operators out of the control plane
+- degraded visibility is better than repeated crash loops during recovery
+- operators need `/status` and the SSH menu to fix broken routes and environment settings
+
 ## Runtime Flow
 1. Operator starts `reproxy`.
 2. Service loads local route state from disk.
@@ -121,6 +127,7 @@ Reason:
 6. Operator creates or updates a route through the HTTP API.
 7. Service validates the input, persists JSON state, optionally runs a certificate command, regenerates Nginx config, and optionally reloads Nginx.
 8. Operators inspect runtime and routes through `/panel/` and mutate routes from the SSH menu script.
+9. If startup sync fails, the service still starts and exposes the failure through degraded runtime status.
 
 ## Planned Project Structure
 - `cmd/reproxy`: application entrypoint

@@ -32,3 +32,4 @@
 - 2026-04-09: Converted the browser panel into a read-only observability surface for routes and runtime status.
 - 2026-04-09: Finalized the name-based route API/docs, fixed the bootstrap panel path hint for custom install directories, and re-verified with `go test ./...`, `make build`, local bootstrap install, SSH menu launch, and uninstall.
 - 2026-04-09: Improved the SSH menu to print API error bodies directly and added a regression test for domain routes that proxy to an HTTP host upstream.
+- 2026-04-09: Changed startup behavior so initial sync failures keep the API online in degraded mode, and clarified the Cloudflare email/plugin configuration in docs and env examples.

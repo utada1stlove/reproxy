@@ -17,6 +17,10 @@ import (
 	"github.com/utada1stlove/reproxy/internal/store"
 )
 
+type startupSyncer interface {
+	Sync(ctx context.Context) error
+}
+
 func main() {
 	logger := log.New(os.Stdout, "reproxy ", log.Ldate|log.Ltime|log.Lmsgprefix)
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -31,9 +35,7 @@ func main() {
 	}
 
 	manager := app.NewManager(routeStore, syncer)
-	if err := manager.Sync(context.Background()); err != nil {
-		logger.Fatalf("initial nginx sync failed: %v", err)
-	}
+	syncOnStartup(context.Background(), logger, manager)
 
 	server := httpapi.NewServer(cfg.ListenAddr, logger, manager)
 	logger.Printf("serving API on %s", cfg.ListenAddr)
@@ -54,4 +56,10 @@ func main() {
 	}
 
 	logger.Printf("server stopped cleanly")
+}
+
+func syncOnStartup(ctx context.Context, logger *log.Logger, syncer startupSyncer) {
+	if err := syncer.Sync(ctx); err != nil {
+		logger.Printf("initial nginx sync failed, continuing in degraded mode: %v", err)
+	}
 }
