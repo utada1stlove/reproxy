@@ -34,8 +34,11 @@ func NewServer(addr string, logger *log.Logger, manager *app.Manager) *http.Serv
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", h.handleRoot)
 	mux.HandleFunc("/healthz", h.handleHealth)
 	mux.HandleFunc("/status", h.handleStatus)
+	mux.HandleFunc("/panel", h.handlePanelRoot)
+	mux.Handle("/panel/", panelAssetHandler())
 	mux.HandleFunc("/routes", h.handleRoutes)
 	mux.HandleFunc("/routes/", h.handleRouteByDomain)
 
@@ -47,6 +50,24 @@ func NewServer(addr string, logger *log.Logger, manager *app.Manager) *http.Serv
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+}
+
+func (h *handler) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		writeJSON(w, http.StatusNotFound, routeResponse{Error: "not found"})
+		return
+	}
+
+	http.Redirect(w, r, "/panel/", http.StatusTemporaryRedirect)
+}
+
+func (h *handler) handlePanelRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/panel" {
+		writeJSON(w, http.StatusNotFound, routeResponse{Error: "not found"})
+		return
+	}
+
+	http.Redirect(w, r, "/panel/", http.StatusTemporaryRedirect)
 }
 
 func (h *handler) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +170,8 @@ func (h *handler) handleRouteByDomain(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		h.handleGetRouteByDomain(w, r, domain)
+	case http.MethodPut:
+		h.handleUpdateRouteByDomain(w, r, domain)
 	case http.MethodDelete:
 		h.handleDeleteRouteByDomain(w, r, domain)
 	default:
@@ -182,6 +205,63 @@ func (h *handler) handleGetRouteByDomain(w http.ResponseWriter, r *http.Request,
 	}
 
 	writeJSON(w, http.StatusOK, routeResponse{Route: &route})
+}
+
+func (h *handler) handleUpdateRouteByDomain(w http.ResponseWriter, r *http.Request, domain string) {
+	defer r.Body.Close()
+
+	_, found, err := h.manager.GetRouteDetail(r.Context(), domain)
+	if err != nil {
+		status := http.StatusInternalServerError
+
+		var validationErr app.ValidationError
+		if errors.As(err, &validationErr) {
+			status = http.StatusBadRequest
+		}
+
+		writeJSON(w, status, routeResponse{Error: err.Error()})
+		return
+	}
+
+	if !found {
+		writeJSON(w, http.StatusNotFound, routeResponse{Error: "route not found"})
+		return
+	}
+
+	var input app.UpsertRouteInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, routeResponse{Error: "invalid JSON body"})
+		return
+	}
+
+	input.Domain = domain
+	route, _, err := h.manager.UpsertRoute(r.Context(), input)
+	if err != nil {
+		status := http.StatusInternalServerError
+
+		var validationErr app.ValidationError
+		if errors.As(err, &validationErr) {
+			status = http.StatusBadRequest
+		}
+
+		writeJSON(w, status, routeResponse{Error: err.Error()})
+		return
+	}
+
+	details, err := h.manager.DescribeRoute(r.Context(), route)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, routeResponse{Error: err.Error()})
+		return
+	}
+
+	h.logger.Printf("route updated domain=%s target=%s:%d", route.Domain, route.TargetIP, route.TargetPort)
+	writeJSON(w, http.StatusOK, routeResponse{
+		Result: "updated",
+		Route:  &details,
+	})
 }
 
 func (h *handler) handleDeleteRouteByDomain(w http.ResponseWriter, r *http.Request, domain string) {

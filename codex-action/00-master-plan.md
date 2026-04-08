@@ -78,6 +78,18 @@ Reason:
 - the repo should remain installable through a raw GitHub script URL
 - bootstrap should install dependencies, fetch source, run the installer, and optionally start the service
 
+### Decision 9: Embed the operator panel inside the Go binary
+Reason:
+- avoids introducing a separate frontend build pipeline
+- keeps installation and upgrades single-binary and low-maintenance
+- gives operators a simple CRUD surface for day-2 operations
+
+### Decision 10: Provide an uninstall script alongside install and bootstrap
+Reason:
+- operational tooling should support the full lifecycle, not only installation
+- removing stale Nginx config and the service unit should be repeatable
+- keeping optional state backups makes rollback and reinstallation safer
+
 ## Runtime Flow
 1. Operator starts `reproxy`.
 2. Service loads local route state from disk.
@@ -100,8 +112,13 @@ Reason:
 
 ## MVP API Shape
 - `GET /healthz`
+- `GET /status`
 - `GET /routes`
+- `GET /routes/{domain}`
 - `POST /routes`
+- `PUT /routes/{domain}`
+- `DELETE /routes/{domain}`
+- `GET /panel/`
 
 `POST /routes` uses domain as the stable key and behaves as upsert for MVP simplicity and retry safety.
 
@@ -136,3 +153,6 @@ Reason:
 
 ### Phase 7
 - Add GitHub bootstrap installation flow and publish the one-command installation path in the README.
+
+### Phase 8
+- Add the embedded panel, explicit update endpoint, and uninstall tooling.

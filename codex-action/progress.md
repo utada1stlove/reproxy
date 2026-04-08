@@ -9,6 +9,7 @@
 - [x] Phase 5: Route deletion, validation hook, and deployment examples completed
 - [x] Phase 6: Status visibility, graceful shutdown, and install tooling completed
 - [x] Phase 7: GitHub bootstrap install flow completed
+- [x] Phase 8: Embedded panel, explicit update endpoint, and uninstall tooling completed
 
 ## Activity Log
 - 2026-04-08: Checked repository baseline. Existing files were `AGENTS.md`, `README.md`, and `LICENSE`.
@@ -23,3 +24,5 @@
 - 2026-04-09: Verified `go build` with a writable `GOCACHE` and tested `deployments/install.sh` successfully against `/tmp`.
 - 2026-04-09: Added `deployments/bootstrap.sh` so the project can be installed directly from a raw GitHub script URL.
 - 2026-04-09: Verified `deployments/bootstrap.sh` locally with a writable `/tmp` target and updated build tooling to use writable Go cache paths by default.
+- 2026-04-09: Added the embedded `/panel/` UI, `PUT /routes/{domain}`, and `deployments/uninstall.sh` for full install-to-remove lifecycle coverage.
+- 2026-04-09: Re-verified with `go test ./...`, `make build`, local bootstrap install to `/tmp`, and local uninstall with preserved state backup.

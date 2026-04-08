@@ -90,6 +90,19 @@ curl -fsSL https://raw.githubusercontent.com/utada1stlove/reproxy/main/deploymen
   sudo env REPROXY_SKIP_START=1 bash
 ```
 
+卸载也已经有一键脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/utada1stlove/reproxy/main/deployments/uninstall.sh | sudo bash
+```
+
+如果你想卸载但保留现有环境文件和路由数据：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/utada1stlove/reproxy/main/deployments/uninstall.sh | \
+  sudo env REPROXY_KEEP_STATE=1 bash
+```
+
 ### 1. 构建或直接运行
 
 ```bash
@@ -137,6 +150,23 @@ http {
 }
 ```
 
+## Panel
+
+安装并启动后，可以直接打开：
+
+```text
+http://127.0.0.1:8080/panel/
+```
+
+面板内支持：
+- 刷新服务和路由状态
+- 新增路由
+- 修改已有路由
+- 删除路由
+- 查看 TLS 就绪情况和最近同步状态
+
+根路径 `/` 会自动跳转到 `/panel/`。
+
 ## API
 
 ### 健康检查
@@ -174,6 +204,17 @@ curl http://127.0.0.1:8080/routes
 curl http://127.0.0.1:8080/routes/demo.example.com
 ```
 
+### 更新单个路由
+
+```bash
+curl -X PUT http://127.0.0.1:8080/routes/demo.example.com \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "target_ip": "10.0.0.24",
+    "target_port": 9090
+  }'
+```
+
 ### 创建或更新路由
 
 ```bash
@@ -204,6 +245,7 @@ curl -X DELETE http://127.0.0.1:8080/routes/demo.example.com
 - 环境文件样例：`deployments/env/reproxy.env.example`
 - 安装脚本：`deployments/install.sh`
 - GitHub bootstrap 脚本：`deployments/bootstrap.sh`
+- 卸载脚本：`deployments/uninstall.sh`
 - Nginx include 样例：`deployments/nginx/reproxy.http.include.example`
 
 安装脚本会优先复用现成的 `bin/reproxy`；如果不存在，则使用本地 Go 工具链直接构建再安装。
@@ -218,6 +260,20 @@ GitHub bootstrap 脚本会先拉源码，再调用安装脚本，并在默认情
 5. 用 `curl /status` 确认服务状态
 
 当前提供的 `systemd` 样例默认以 `root` 运行，因为它通常需要写入 Nginx 配置、访问证书目录并触发 reload。后续如果改成受限用户运行，需要同时调整文件权限和 reload 策略。
+
+## 卸载
+
+本地源码方式卸载：
+
+```bash
+sudo bash deployments/uninstall.sh
+```
+
+保留 env 和 data 的卸载方式：
+
+```bash
+sudo REPROXY_KEEP_STATE=1 bash deployments/uninstall.sh
+```
 
 ## 关键配置项
 

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>reproxy Panel</title>
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Edge Proxy Control</p>
+          <h1>reproxy Panel</h1>
+          <p class="hero-text">
+            Manage reverse proxy routes from one place. Create, update, delete, and
+            inspect HTTPS readiness without leaving the browser.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="refresh-all" class="button ghost" type="button">Refresh</button>
+          <a class="button secondary" href="/status" target="_blank" rel="noreferrer">View Status JSON</a>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="card card-summary">
+          <div class="card-header">
+            <div>
+              <p class="card-kicker">Runtime</p>
+              <h2>Service Status</h2>
+            </div>
+            <span id="service-state" class="status-pill neutral">Loading</span>
+          </div>
+
+          <div class="summary-grid">
+            <article class="metric">
+              <span class="metric-label">Routes</span>
+              <strong id="route-count">0</strong>
+            </article>
+            <article class="metric">
+              <span class="metric-label">TLS Ready</span>
+              <strong id="tls-count">0</strong>
+            </article>
+            <article class="metric metric-wide">
+              <span class="metric-label">Config Path</span>
+              <strong id="config-path">-</strong>
+            </article>
+          </div>
+
+          <dl class="status-list">
+            <div>
+              <dt>Last Sync</dt>
+              <dd id="last-sync">-</dd>
+            </div>
+            <div>
+              <dt>Last Validation</dt>
+              <dd id="last-validation">-</dd>
+            </div>
+            <div>
+              <dt>Last Reload</dt>
+              <dd id="last-reload">-</dd>
+            </div>
+            <div>
+              <dt>Last Certificate</dt>
+              <dd id="last-certificate">-</dd>
+            </div>
+          </dl>
+
+          <div id="sync-error-box" class="notice warning hidden"></div>
+        </section>
+
+        <section class="card card-form">
+          <div class="card-header">
+            <div>
+              <p class="card-kicker">Editor</p>
+              <h2 id="form-title">Create Route</h2>
+            </div>
+            <button id="reset-form" class="button ghost" type="button">New Route</button>
+          </div>
+
+          <form id="route-form" class="route-form">
+            <label>
+              <span>Domain</span>
+              <input id="domain" name="domain" type="text" placeholder="app.example.com" required>
+            </label>
+
+            <label>
+              <span>Target IP</span>
+              <input id="target-ip" name="target_ip" type="text" placeholder="10.0.0.12" required>
+            </label>
+
+            <label>
+              <span>Target Port</span>
+              <input id="target-port" name="target_port" type="number" min="1" max="65535" placeholder="8080" required>
+            </label>
+
+            <div class="form-actions">
+              <button id="submit-button" class="button primary" type="submit">Create Route</button>
+              <button id="cancel-edit" class="button ghost hidden" type="button">Cancel Edit</button>
+            </div>
+          </form>
+
+          <div id="form-notice" class="notice hidden"></div>
+        </section>
+
+        <section class="card card-routes">
+          <div class="card-header">
+            <div>
+              <p class="card-kicker">Inventory</p>
+              <h2>Routes</h2>
+            </div>
+            <span id="route-table-meta" class="table-meta">0 loaded</span>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Domain</th>
+                  <th>Target</th>
+                  <th>TLS</th>
+                  <th>Updated</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="routes-body">
+                <tr>
+                  <td colspan="5" class="empty-state">Loading routes...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
