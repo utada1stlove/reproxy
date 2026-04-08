@@ -119,6 +119,19 @@ func TestCreatePortListenerRoute(t *testing.T) {
 	}
 }
 
+func TestCreateDomainRouteWithHTTPHostUpstream(t *testing.T) {
+	server := newTestHTTPServer()
+
+	createPayload := `{"name":"hv.gen2.latexme.de","frontend_mode":"domain","domain":"hv.gen2.latexme.de","upstream_mode":"host","target_host":"hentaiverse.org","target_scheme":"http","upstream_host_header":"hentaiverse.org"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/routes", bytes.NewBufferString(createPayload))
+	server.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func newTestHTTPServer() *http.Server {
 	manager := app.NewManager(&memoryStore{}, &statusSyncer{})
 	logger := log.New(io.Discard, "", 0)

@@ -47,24 +47,57 @@ json_escape() {
 }
 
 pretty_print() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -m json.tool
+  local payload="${1:-}"
+
+  if [[ -z "${payload}" ]]; then
     return
   fi
 
-  cat
+  if command -v python3 >/dev/null 2>&1; then
+    if printf '%s\n' "${payload}" | python3 -m json.tool; then
+      return
+    fi
+  fi
+
+  printf '%s\n' "${payload}"
 }
 
 request() {
   local method="$1"
   local path="$2"
   local body="${3:-}"
+  local response_file http_code payload
+
+  response_file="$(mktemp)"
+  payload=""
 
   if [[ -n "${body}" ]]; then
-    curl -fsS -X "${method}" "${API_BASE}${path}" -H 'Content-Type: application/json' -d "${body}"
+    http_code="$(curl -sS -X "${method}" "${API_BASE}${path}" -H 'Content-Type: application/json' -d "${body}" -o "${response_file}" -w '%{http_code}')"
   else
-    curl -fsS -X "${method}" "${API_BASE}${path}"
+    http_code="$(curl -sS -X "${method}" "${API_BASE}${path}" -o "${response_file}" -w '%{http_code}')"
   fi
+
+  if [[ -f "${response_file}" ]]; then
+    payload="$(cat "${response_file}")"
+    rm -f "${response_file}"
+  fi
+
+  if [[ "${http_code}" -ge 400 ]]; then
+    printf 'API request failed with HTTP %s\n' "${http_code}" >&2
+    if [[ -n "${payload}" ]]; then
+      pretty_print "${payload}" >&2 || true
+    fi
+    return 1
+  fi
+
+  printf '%s' "${payload}"
+}
+
+run_request() {
+  local response
+
+  response="$(request "$@")" || return
+  pretty_print "${response}"
 }
 
 pause() {
@@ -89,12 +122,12 @@ prompt() {
 
 show_status() {
   printf '\n== Status ==\n'
-  request GET "/status" | pretty_print
+  run_request GET "/status"
 }
 
 list_routes() {
   printf '\n== Routes ==\n'
-  request GET "/routes" | pretty_print
+  run_request GET "/routes"
 }
 
 create_domain_route() {
@@ -131,7 +164,7 @@ EOF
 )
   fi
 
-  request POST "/routes" "${payload}" | pretty_print
+  run_request POST "/routes" "${payload}"
 }
 
 create_port_route() {
@@ -167,14 +200,14 @@ EOF
 )
   fi
 
-  request POST "/routes" "${payload}" | pretty_print
+  run_request POST "/routes" "${payload}"
 }
 
 update_route() {
   local name payload
   printf '\nCurrent route details\n'
   name="$(prompt 'Route Name to update' '')"
-  request GET "/routes/${name}" | pretty_print || return
+  run_request GET "/routes/${name}" || return
 
   printf '\nChoose update style:\n1) Replace as domain route\n2) Replace as port route\n'
   local choice
@@ -187,7 +220,7 @@ update_route() {
     payload="$(build_domain_update_payload "${name}")"
   fi
 
-  request PUT "/routes/${name}" "${payload}" | pretty_print
+  run_request PUT "/routes/${name}" "${payload}"
 }
 
 build_domain_update_payload() {
@@ -260,7 +293,7 @@ delete_route() {
     return
   fi
 
-  request DELETE "/routes/${name}" | pretty_print
+  run_request DELETE "/routes/${name}"
 }
 
 main_menu() {
