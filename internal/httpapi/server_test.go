@@ -63,10 +63,10 @@ func TestPanelServesEmbeddedIndex(t *testing.T) {
 	}
 }
 
-func TestUpdateRouteByDomain(t *testing.T) {
+func TestUpdateRouteByName(t *testing.T) {
 	server := newTestHTTPServer()
 
-	createPayload := `{"domain":"demo.example.com","target_ip":"10.0.0.12","target_port":8080}`
+	createPayload := `{"name":"demo-route","frontend_mode":"domain","domain":"demo.example.com","upstream_mode":"ip_port","target_ip":"10.0.0.12","target_port":8080}`
 	createRecorder := httptest.NewRecorder()
 	createRequest := httptest.NewRequest(http.MethodPost, "/routes", bytes.NewBufferString(createPayload))
 	server.Handler.ServeHTTP(createRecorder, createRequest)
@@ -75,9 +75,9 @@ func TestUpdateRouteByDomain(t *testing.T) {
 		t.Fatalf("expected create status 201, got %d", createRecorder.Code)
 	}
 
-	updatePayload := `{"target_ip":"10.0.0.24","target_port":9090}`
+	updatePayload := `{"frontend_mode":"domain","domain":"demo.example.com","upstream_mode":"host","target_host":"hentaiverse.org","target_scheme":"https"}`
 	updateRecorder := httptest.NewRecorder()
-	updateRequest := httptest.NewRequest(http.MethodPut, "/routes/demo.example.com", bytes.NewBufferString(updatePayload))
+	updateRequest := httptest.NewRequest(http.MethodPut, "/routes/demo-route", bytes.NewBufferString(updatePayload))
 	server.Handler.ServeHTTP(updateRecorder, updateRequest)
 
 	if updateRecorder.Code != http.StatusOK {
@@ -85,7 +85,7 @@ func TestUpdateRouteByDomain(t *testing.T) {
 	}
 
 	getRecorder := httptest.NewRecorder()
-	getRequest := httptest.NewRequest(http.MethodGet, "/routes/demo.example.com", nil)
+	getRequest := httptest.NewRequest(http.MethodGet, "/routes/demo-route", nil)
 	server.Handler.ServeHTTP(getRecorder, getRequest)
 
 	if getRecorder.Code != http.StatusOK {
@@ -101,8 +101,21 @@ func TestUpdateRouteByDomain(t *testing.T) {
 		t.Fatalf("expected route payload")
 	}
 
-	if payload.Route.TargetPort != 9090 {
-		t.Fatalf("expected updated target port, got %d", payload.Route.TargetPort)
+	if payload.Route.TargetHost != "hentaiverse.org" {
+		t.Fatalf("expected updated target host, got %q", payload.Route.TargetHost)
+	}
+}
+
+func TestCreatePortListenerRoute(t *testing.T) {
+	server := newTestHTTPServer()
+
+	createPayload := `{"name":"hv-port","frontend_mode":"port","listen_port":8080,"upstream_mode":"host","target_host":"hentaiverse.org","target_scheme":"https"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/routes", bytes.NewBufferString(createPayload))
+	server.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected create status 201, got %d", recorder.Code)
 	}
 }
 

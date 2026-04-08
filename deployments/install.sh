@@ -7,6 +7,7 @@ INSTALL_DIR="${1:-/opt/reproxy}"
 SERVICE_PATH="${2:-/etc/systemd/system/reproxy.service}"
 ENV_PATH="${INSTALL_DIR}/deployments/env/reproxy.env"
 BINARY_SOURCE="${ROOT_DIR}/bin/reproxy"
+MENU_SOURCE="${ROOT_DIR}/deployments/reproxy-panel.sh"
 
 mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/data" "${INSTALL_DIR}/deployments/env"
 
@@ -22,6 +23,10 @@ else
   )
 fi
 
+if [[ -f "${MENU_SOURCE}" ]]; then
+  install -m 0755 "${MENU_SOURCE}" "${INSTALL_DIR}/bin/reproxy-panel.sh"
+fi
+
 if [[ ! -f "${ENV_PATH}" ]]; then
   install -m 0644 "${ROOT_DIR}/deployments/env/reproxy.env.example" "${ENV_PATH}"
 fi
@@ -35,6 +40,7 @@ Systemd service: ${SERVICE_PATH}
 
 Next steps:
 1. Edit ${ENV_PATH}
-2. systemctl daemon-reload
-3. systemctl enable --now reproxy
+2. Use ${INSTALL_DIR}/bin/reproxy-panel.sh for SSH menu management
+3. systemctl daemon-reload
+4. systemctl enable --now reproxy
 EOF

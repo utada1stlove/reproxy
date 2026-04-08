@@ -2,9 +2,9 @@
 
 ## Goal
 Build an MVP edge proxy manager that lets an operator provide:
-- domain
-- target IP
-- target port
+- either a domain listener or a port listener
+- either an IP:port upstream or a host-based HTTP/HTTPS upstream
+- optional HTTPS automation settings
 
 The system should then:
 - persist the route definition
@@ -18,9 +18,13 @@ The system should then:
 - Provide a small HTTP API for route management.
 - Persist route definitions in a local JSON file.
 - Render an Nginx site config from the stored routes.
-- Support optional automatic certificate issuance by executing a configured certificate command template.
+- Support domain listeners and port listeners in the same config model.
+- Support IP:port upstreams and host-based HTTP/HTTPS upstreams.
+- Support optional automatic certificate issuance by executing a configured certificate command template or the built-in Cloudflare DNS path.
 - Support optional automatic reload by executing a configured reload command after config sync.
 - Expose a health endpoint for operational checks.
+- Expose a read-only browser panel for routes and runtime visibility.
+- Provide an SSH menu script for route CRUD operations.
 
 ## Explicit Non-Goals For MVP
 - Multi-user auth and RBAC
@@ -90,14 +94,33 @@ Reason:
 - removing stale Nginx config and the service unit should be repeatable
 - keeping optional state backups makes rollback and reinstallation safer
 
+### Decision 11: Split browser and SSH management surfaces by responsibility
+Reason:
+- the browser panel is best used for route and sync visibility
+- interactive route mutations are safer from SSH on the target machine
+- a shell menu avoids shipping a larger authenticated web UI in the MVP
+
+### Decision 12: Model listeners and upstreams independently
+Reason:
+- domain listeners and port listeners solve different ingress cases
+- the same route system should support both internal backends and external websites
+- Nginx can render these cases cleanly with separate frontend and upstream fields
+
+### Decision 13: Add a built-in Cloudflare DNS certificate path
+Reason:
+- DNS challenge is better suited than HTTP challenge for some operators
+- Cloudflare is a common provider and worth first-class handling
+- keeping it in runtime config is still lighter than embedding a full ACME client
+
 ## Runtime Flow
 1. Operator starts `reproxy`.
 2. Service loads local route state from disk.
-3. Service checks whether TLS material already exists for each domain.
+3. Service checks whether TLS material already exists for each TLS-enabled domain route.
 4. Service renders `deployments/nginx/reproxy.conf`.
 5. Optional reload command is executed if configured.
 6. Operator creates or updates a route through the HTTP API.
 7. Service validates the input, persists JSON state, optionally runs a certificate command, regenerates Nginx config, and optionally reloads Nginx.
+8. Operators inspect runtime and routes through `/panel/` and mutate routes from the SSH menu script.
 
 ## Planned Project Structure
 - `cmd/reproxy`: application entrypoint
@@ -114,13 +137,13 @@ Reason:
 - `GET /healthz`
 - `GET /status`
 - `GET /routes`
-- `GET /routes/{domain}`
+- `GET /routes/{name}`
 - `POST /routes`
-- `PUT /routes/{domain}`
-- `DELETE /routes/{domain}`
+- `PUT /routes/{name}`
+- `DELETE /routes/{name}`
 - `GET /panel/`
 
-`POST /routes` uses domain as the stable key and behaves as upsert for MVP simplicity and retry safety.
+`POST /routes` uses the route `name` as the stable key and behaves as upsert for MVP simplicity and retry safety.
 
 ## Risks And Mitigations
 - Risk: config reload fails after state is persisted.
@@ -156,3 +179,6 @@ Reason:
 
 ### Phase 8
 - Add the embedded panel, explicit update endpoint, and uninstall tooling.
+
+### Phase 9
+- Add port-listener routes, host-based upstreams, Cloudflare certificate support, a read-only web panel, and an SSH CRUD menu.

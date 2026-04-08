@@ -40,7 +40,7 @@ func NewServer(addr string, logger *log.Logger, manager *app.Manager) *http.Serv
 	mux.HandleFunc("/panel", h.handlePanelRoot)
 	mux.Handle("/panel/", panelAssetHandler())
 	mux.HandleFunc("/routes", h.handleRoutes)
-	mux.HandleFunc("/routes/", h.handleRouteByDomain)
+	mux.HandleFunc("/routes/", h.handleRouteByName)
 
 	return &http.Server{
 		Addr:              addr,
@@ -129,14 +129,7 @@ func (h *handler) handleUpsertRoute(w http.ResponseWriter, r *http.Request) {
 
 	route, created, err := h.manager.UpsertRoute(r.Context(), input)
 	if err != nil {
-		status := http.StatusInternalServerError
-
-		var validationErr app.ValidationError
-		if errors.As(err, &validationErr) {
-			status = http.StatusBadRequest
-		}
-
-		writeJSON(w, status, routeResponse{Error: err.Error()})
+		writeJSON(w, errorStatus(err), routeResponse{Error: err.Error()})
 		return
 	}
 
@@ -153,15 +146,15 @@ func (h *handler) handleUpsertRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logger.Printf("route %s domain=%s target=%s:%d", result, route.Domain, route.TargetIP, route.TargetPort)
+	h.logger.Printf("route %s name=%s frontend=%s", result, route.Name, route.FrontendMode)
 	writeJSON(w, status, routeResponse{
 		Result: result,
 		Route:  &details,
 	})
 }
 
-func (h *handler) handleRouteByDomain(w http.ResponseWriter, r *http.Request) {
-	domain, ok := extractDomainFromPath(r.URL.Path)
+func (h *handler) handleRouteByName(w http.ResponseWriter, r *http.Request) {
+	name, ok := extractRouteNameFromPath(r.URL.Path)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, routeResponse{Error: "route not found"})
 		return
@@ -169,33 +162,20 @@ func (h *handler) handleRouteByDomain(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		h.handleGetRouteByDomain(w, r, domain)
+		h.handleGetRouteByName(w, r, name)
 	case http.MethodPut:
-		h.handleUpdateRouteByDomain(w, r, domain)
+		h.handleUpdateRouteByName(w, r, name)
 	case http.MethodDelete:
-		h.handleDeleteRouteByDomain(w, r, domain)
+		h.handleDeleteRouteByName(w, r, name)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, routeResponse{Error: "method not allowed"})
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func (h *handler) handleGetRouteByDomain(w http.ResponseWriter, r *http.Request, domain string) {
-	route, found, err := h.manager.GetRouteDetail(r.Context(), domain)
+func (h *handler) handleGetRouteByName(w http.ResponseWriter, r *http.Request, name string) {
+	route, found, err := h.manager.GetRouteDetail(r.Context(), name)
 	if err != nil {
-		status := http.StatusInternalServerError
-
-		var validationErr app.ValidationError
-		if errors.As(err, &validationErr) {
-			status = http.StatusBadRequest
-		}
-
-		writeJSON(w, status, routeResponse{Error: err.Error()})
+		writeJSON(w, errorStatus(err), routeResponse{Error: err.Error()})
 		return
 	}
 
@@ -207,19 +187,12 @@ func (h *handler) handleGetRouteByDomain(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, routeResponse{Route: &route})
 }
 
-func (h *handler) handleUpdateRouteByDomain(w http.ResponseWriter, r *http.Request, domain string) {
+func (h *handler) handleUpdateRouteByName(w http.ResponseWriter, r *http.Request, name string) {
 	defer r.Body.Close()
 
-	_, found, err := h.manager.GetRouteDetail(r.Context(), domain)
+	current, found, err := h.manager.GetRouteDetail(r.Context(), name)
 	if err != nil {
-		status := http.StatusInternalServerError
-
-		var validationErr app.ValidationError
-		if errors.As(err, &validationErr) {
-			status = http.StatusBadRequest
-		}
-
-		writeJSON(w, status, routeResponse{Error: err.Error()})
+		writeJSON(w, errorStatus(err), routeResponse{Error: err.Error()})
 		return
 	}
 
@@ -228,26 +201,33 @@ func (h *handler) handleUpdateRouteByDomain(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var input app.UpsertRouteInput
+	input := app.UpsertRouteInput{
+		Name:               current.Name,
+		FrontendMode:       current.FrontendMode,
+		Domain:             current.Domain,
+		ListenIP:           current.ListenIP,
+		ListenPort:         current.ListenPort,
+		EnableTLS:          current.EnableTLS,
+		UpstreamMode:       current.UpstreamMode,
+		TargetIP:           current.TargetIP,
+		TargetHost:         current.TargetHost,
+		TargetPort:         current.TargetPort,
+		TargetScheme:       current.TargetScheme,
+		UpstreamHostHeader: current.UpstreamHostHeader,
+		UpstreamSNI:        current.UpstreamSNI,
+	}
+
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
-
 	if err := decoder.Decode(&input); err != nil {
 		writeJSON(w, http.StatusBadRequest, routeResponse{Error: "invalid JSON body"})
 		return
 	}
 
-	input.Domain = domain
+	input.Name = current.Name
 	route, _, err := h.manager.UpsertRoute(r.Context(), input)
 	if err != nil {
-		status := http.StatusInternalServerError
-
-		var validationErr app.ValidationError
-		if errors.As(err, &validationErr) {
-			status = http.StatusBadRequest
-		}
-
-		writeJSON(w, status, routeResponse{Error: err.Error()})
+		writeJSON(w, errorStatus(err), routeResponse{Error: err.Error()})
 		return
 	}
 
@@ -257,24 +237,17 @@ func (h *handler) handleUpdateRouteByDomain(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.logger.Printf("route updated domain=%s target=%s:%d", route.Domain, route.TargetIP, route.TargetPort)
+	h.logger.Printf("route updated name=%s frontend=%s", route.Name, route.FrontendMode)
 	writeJSON(w, http.StatusOK, routeResponse{
 		Result: "updated",
 		Route:  &details,
 	})
 }
 
-func (h *handler) handleDeleteRouteByDomain(w http.ResponseWriter, r *http.Request, domain string) {
-	deleted, err := h.manager.DeleteRoute(r.Context(), domain)
+func (h *handler) handleDeleteRouteByName(w http.ResponseWriter, r *http.Request, name string) {
+	deleted, err := h.manager.DeleteRoute(r.Context(), name)
 	if err != nil {
-		status := http.StatusInternalServerError
-
-		var validationErr app.ValidationError
-		if errors.As(err, &validationErr) {
-			status = http.StatusBadRequest
-		}
-
-		writeJSON(w, status, routeResponse{Error: err.Error()})
+		writeJSON(w, errorStatus(err), routeResponse{Error: err.Error()})
 		return
 	}
 
@@ -283,20 +256,35 @@ func (h *handler) handleDeleteRouteByDomain(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	h.logger.Printf("route deleted domain=%s", domain)
+	h.logger.Printf("route deleted name=%s", name)
 	writeJSON(w, http.StatusOK, routeResponse{Result: "deleted"})
 }
 
-func extractDomainFromPath(path string) (string, bool) {
-	domain := strings.TrimPrefix(path, "/routes/")
-	if domain == "" || strings.Contains(domain, "/") {
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func extractRouteNameFromPath(path string) (string, bool) {
+	name := strings.TrimPrefix(path, "/routes/")
+	if name == "" || strings.Contains(name, "/") {
 		return "", false
 	}
 
-	unescaped, err := url.PathUnescape(domain)
+	unescaped, err := url.PathUnescape(name)
 	if err != nil {
 		return "", false
 	}
 
 	return unescaped, true
+}
+
+func errorStatus(err error) int {
+	var validationErr app.ValidationError
+	if errors.As(err, &validationErr) {
+		return http.StatusBadRequest
+	}
+
+	return http.StatusInternalServerError
 }

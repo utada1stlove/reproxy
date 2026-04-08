@@ -10,6 +10,7 @@
 - [x] Phase 6: Status visibility, graceful shutdown, and install tooling completed
 - [x] Phase 7: GitHub bootstrap install flow completed
 - [x] Phase 8: Embedded panel, explicit update endpoint, and uninstall tooling completed
+- [x] Phase 9: Port-listener routes, host upstreams, Cloudflare TLS path, and SSH menu completed
 
 ## Activity Log
 - 2026-04-08: Checked repository baseline. Existing files were `AGENTS.md`, `README.md`, and `LICENSE`.
@@ -26,3 +27,7 @@
 - 2026-04-09: Verified `deployments/bootstrap.sh` locally with a writable `/tmp` target and updated build tooling to use writable Go cache paths by default.
 - 2026-04-09: Added the embedded `/panel/` UI, `PUT /routes/{domain}`, and `deployments/uninstall.sh` for full install-to-remove lifecycle coverage.
 - 2026-04-09: Re-verified with `go test ./...`, `make build`, local bootstrap install to `/tmp`, and local uninstall with preserved state backup.
+- 2026-04-09: Refactored the route model to support domain listeners, port listeners, IP:port upstreams, and host-based HTTP/HTTPS upstreams.
+- 2026-04-09: Added built-in Cloudflare DNS certificate support and an SSH menu script for create, update, and delete flows.
+- 2026-04-09: Converted the browser panel into a read-only observability surface for routes and runtime status.
+- 2026-04-09: Finalized the name-based route API/docs, fixed the bootstrap panel path hint for custom install directories, and re-verified with `go test ./...`, `make build`, local bootstrap install, SSH menu launch, and uninstall.

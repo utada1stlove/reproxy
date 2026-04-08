@@ -11,18 +11,46 @@ import (
 	"time"
 )
 
+const (
+	FrontendModeDomain = "domain"
+	FrontendModePort   = "port"
+
+	UpstreamModeIPPort = "ip_port"
+	UpstreamModeHost   = "host"
+)
+
 type Route struct {
-	Domain     string    `json:"domain"`
-	TargetIP   string    `json:"target_ip"`
-	TargetPort int       `json:"target_port"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	Name               string    `json:"name"`
+	FrontendMode       string    `json:"frontend_mode"`
+	Domain             string    `json:"domain,omitempty"`
+	ListenIP           string    `json:"listen_ip,omitempty"`
+	ListenPort         int       `json:"listen_port,omitempty"`
+	EnableTLS          bool      `json:"enable_tls,omitempty"`
+	UpstreamMode       string    `json:"upstream_mode"`
+	TargetIP           string    `json:"target_ip,omitempty"`
+	TargetHost         string    `json:"target_host,omitempty"`
+	TargetPort         int       `json:"target_port,omitempty"`
+	TargetScheme       string    `json:"target_scheme,omitempty"`
+	UpstreamHostHeader string    `json:"upstream_host_header,omitempty"`
+	UpstreamSNI        string    `json:"upstream_sni,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type UpsertRouteInput struct {
-	Domain     string `json:"domain"`
-	TargetIP   string `json:"target_ip"`
-	TargetPort int    `json:"target_port"`
+	Name               string `json:"name"`
+	FrontendMode       string `json:"frontend_mode"`
+	Domain             string `json:"domain"`
+	ListenIP           string `json:"listen_ip"`
+	ListenPort         int    `json:"listen_port"`
+	EnableTLS          bool   `json:"enable_tls"`
+	UpstreamMode       string `json:"upstream_mode"`
+	TargetIP           string `json:"target_ip"`
+	TargetHost         string `json:"target_host"`
+	TargetPort         int    `json:"target_port"`
+	TargetScheme       string `json:"target_scheme"`
+	UpstreamHostHeader string `json:"upstream_host_header"`
+	UpstreamSNI        string `json:"upstream_sni"`
 }
 
 type ValidationError struct {
@@ -49,7 +77,10 @@ type Manager struct {
 	mu     sync.RWMutex
 }
 
-var domainLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+var (
+	domainLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	routeNamePattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,126})$`)
+)
 
 func NewManager(store Store, syncer Syncer) *Manager {
 	return &Manager{
@@ -62,12 +93,11 @@ func (m *Manager) Sync(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	routes, err := m.store.Load(ctx)
+	routes, err := m.loadRoutes(ctx)
 	if err != nil {
 		return err
 	}
 
-	sortRoutes(routes)
 	return m.syncer.Sync(ctx, routes)
 }
 
@@ -75,13 +105,7 @@ func (m *Manager) ListRoutes(ctx context.Context) ([]Route, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	routes, err := m.store.Load(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	sortRoutes(routes)
-	return routes, nil
+	return m.loadRoutes(ctx)
 }
 
 func (m *Manager) UpsertRoute(ctx context.Context, input UpsertRouteInput) (Route, bool, error) {
@@ -93,22 +117,16 @@ func (m *Manager) UpsertRoute(ctx context.Context, input UpsertRouteInput) (Rout
 		return Route{}, false, err
 	}
 
-	routes, err := m.store.Load(ctx)
+	routes, err := m.loadRoutes(ctx)
 	if err != nil {
 		return Route{}, false, err
 	}
 
 	now := time.Now().UTC()
-	route := Route{
-		Domain:     cleaned.Domain,
-		TargetIP:   cleaned.TargetIP,
-		TargetPort: cleaned.TargetPort,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}
+	route := routeFromInput(cleaned, now, now)
 
 	for index, existing := range routes {
-		if existing.Domain != cleaned.Domain {
+		if existing.Name != cleaned.Name {
 			continue
 		}
 
@@ -145,19 +163,19 @@ func (m *Manager) UpsertRoute(ctx context.Context, input UpsertRouteInput) (Rout
 	return route, true, nil
 }
 
-func (m *Manager) DeleteRoute(ctx context.Context, domain string) (bool, error) {
+func (m *Manager) DeleteRoute(ctx context.Context, name string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	domain = normalizeDomain(domain)
-	if err := validateDomain(domain); err != nil {
+	name = normalizeName(name)
+	if err := validateRouteName(name); err != nil {
 		return false, ValidationError{
-			Field:   "domain",
+			Field:   "name",
 			Message: err.Error(),
 		}
 	}
 
-	routes, err := m.store.Load(ctx)
+	routes, err := m.loadRoutes(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -165,7 +183,7 @@ func (m *Manager) DeleteRoute(ctx context.Context, domain string) (bool, error) 
 	filteredRoutes := make([]Route, 0, len(routes))
 	deleted := false
 	for _, route := range routes {
-		if route.Domain == domain {
+		if route.Name == name {
 			deleted = true
 			continue
 		}
@@ -194,34 +212,33 @@ func (m *Manager) ListRouteDetails(ctx context.Context) ([]RouteDetails, error) 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	routes, err := m.store.Load(ctx)
+	routes, err := m.loadRoutes(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	sortRoutes(routes)
 	return m.describeRoutes(ctx, routes)
 }
 
-func (m *Manager) GetRouteDetail(ctx context.Context, domain string) (RouteDetails, bool, error) {
+func (m *Manager) GetRouteDetail(ctx context.Context, name string) (RouteDetails, bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	domain = normalizeDomain(domain)
-	if err := validateDomain(domain); err != nil {
+	name = normalizeName(name)
+	if err := validateRouteName(name); err != nil {
 		return RouteDetails{}, false, ValidationError{
-			Field:   "domain",
+			Field:   "name",
 			Message: err.Error(),
 		}
 	}
 
-	routes, err := m.store.Load(ctx)
+	routes, err := m.loadRoutes(ctx)
 	if err != nil {
 		return RouteDetails{}, false, err
 	}
 
 	for _, route := range routes {
-		if route.Domain != domain {
+		if route.Name != name {
 			continue
 		}
 
@@ -252,12 +269,11 @@ func (m *Manager) Status(ctx context.Context) (StatusSnapshot, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	routes, err := m.store.Load(ctx)
+	routes, err := m.loadRoutes(ctx)
 	if err != nil {
 		return StatusSnapshot{}, err
 	}
 
-	sortRoutes(routes)
 	details, err := m.describeRoutes(ctx, routes)
 	if err != nil {
 		return StatusSnapshot{}, err
@@ -288,33 +304,171 @@ func (m *Manager) Status(ctx context.Context) (StatusSnapshot, error) {
 
 func normalizeAndValidate(input UpsertRouteInput) (UpsertRouteInput, error) {
 	domain := normalizeDomain(input.Domain)
-	if err := validateDomain(domain); err != nil {
+	listenIP := strings.TrimSpace(input.ListenIP)
+	name := normalizeName(input.Name)
+
+	frontendMode := strings.TrimSpace(strings.ToLower(input.FrontendMode))
+	if frontendMode == "" {
+		if domain != "" {
+			frontendMode = FrontendModeDomain
+		} else {
+			frontendMode = FrontendModePort
+		}
+	}
+
+	if name == "" {
+		switch frontendMode {
+		case FrontendModeDomain:
+			name = domain
+		case FrontendModePort:
+			if input.ListenPort > 0 {
+				name = fmt.Sprintf("port-%d", input.ListenPort)
+			}
+		}
+	}
+
+	if err := validateRouteName(name); err != nil {
 		return UpsertRouteInput{}, ValidationError{
-			Field:   "domain",
+			Field:   "name",
 			Message: err.Error(),
 		}
 	}
 
-	ip := strings.TrimSpace(input.TargetIP)
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
+	enableTLS := false
+	switch frontendMode {
+	case FrontendModeDomain:
+		if err := validateDomain(domain); err != nil {
+			return UpsertRouteInput{}, ValidationError{
+				Field:   "domain",
+				Message: err.Error(),
+			}
+		}
+		enableTLS = true
+	case FrontendModePort:
+		if input.ListenPort < 1 || input.ListenPort > 65535 {
+			return UpsertRouteInput{}, ValidationError{
+				Field:   "listen_port",
+				Message: "must be between 1 and 65535",
+			}
+		}
+
+		if listenIP != "" {
+			parsedIP := net.ParseIP(listenIP)
+			if parsedIP == nil {
+				return UpsertRouteInput{}, ValidationError{
+					Field:   "listen_ip",
+					Message: "must be a valid IPv4 or IPv6 address",
+				}
+			}
+
+			listenIP = parsedIP.String()
+		}
+	default:
 		return UpsertRouteInput{}, ValidationError{
-			Field:   "target_ip",
-			Message: "must be a valid IPv4 or IPv6 address",
+			Field:   "frontend_mode",
+			Message: "must be one of domain or port",
 		}
 	}
 
-	if input.TargetPort < 1 || input.TargetPort > 65535 {
-		return UpsertRouteInput{}, ValidationError{
-			Field:   "target_port",
-			Message: "must be between 1 and 65535",
+	upstreamMode := strings.TrimSpace(strings.ToLower(input.UpstreamMode))
+	if upstreamMode == "" {
+		if strings.TrimSpace(input.TargetHost) != "" {
+			upstreamMode = UpstreamModeHost
+		} else {
+			upstreamMode = UpstreamModeIPPort
 		}
+	}
+
+	targetScheme := strings.TrimSpace(strings.ToLower(input.TargetScheme))
+	if targetScheme == "" {
+		targetScheme = "http"
+	}
+
+	if targetScheme != "http" && targetScheme != "https" {
+		return UpsertRouteInput{}, ValidationError{
+			Field:   "target_scheme",
+			Message: "must be http or https",
+		}
+	}
+
+	targetIP := strings.TrimSpace(input.TargetIP)
+	targetHost := normalizeDomain(input.TargetHost)
+	targetPort := input.TargetPort
+	upstreamHostHeader := strings.TrimSpace(input.UpstreamHostHeader)
+	upstreamSNI := strings.TrimSpace(input.UpstreamSNI)
+
+	switch upstreamMode {
+	case UpstreamModeIPPort:
+		parsedIP := net.ParseIP(targetIP)
+		if parsedIP == nil {
+			return UpsertRouteInput{}, ValidationError{
+				Field:   "target_ip",
+				Message: "must be a valid IPv4 or IPv6 address",
+			}
+		}
+
+		if targetPort < 1 || targetPort > 65535 {
+			return UpsertRouteInput{}, ValidationError{
+				Field:   "target_port",
+				Message: "must be between 1 and 65535",
+			}
+		}
+
+		targetIP = parsedIP.String()
+		targetHost = ""
+	case UpstreamModeHost:
+		if err := validateUpstreamHost(targetHost); err != nil {
+			return UpsertRouteInput{}, ValidationError{
+				Field:   "target_host",
+				Message: err.Error(),
+			}
+		}
+
+		if targetPort == 0 {
+			targetPort = defaultPortForScheme(targetScheme)
+		}
+
+		if targetPort < 1 || targetPort > 65535 {
+			return UpsertRouteInput{}, ValidationError{
+				Field:   "target_port",
+				Message: "must be between 1 and 65535",
+			}
+		}
+
+		if upstreamHostHeader == "" {
+			upstreamHostHeader = targetHost
+		}
+
+		if targetScheme == "https" && upstreamSNI == "" {
+			upstreamSNI = targetHost
+		}
+
+		targetIP = ""
+	default:
+		return UpsertRouteInput{}, ValidationError{
+			Field:   "upstream_mode",
+			Message: "must be one of ip_port or host",
+		}
+	}
+
+	if upstreamMode == UpstreamModeIPPort && upstreamHostHeader == "" && domain != "" {
+		upstreamHostHeader = "$host"
 	}
 
 	return UpsertRouteInput{
-		Domain:     domain,
-		TargetIP:   parsedIP.String(),
-		TargetPort: input.TargetPort,
+		Name:               name,
+		FrontendMode:       frontendMode,
+		Domain:             domain,
+		ListenIP:           listenIP,
+		ListenPort:         input.ListenPort,
+		EnableTLS:          enableTLS,
+		UpstreamMode:       upstreamMode,
+		TargetIP:           targetIP,
+		TargetHost:         targetHost,
+		TargetPort:         targetPort,
+		TargetScheme:       targetScheme,
+		UpstreamHostHeader: upstreamHostHeader,
+		UpstreamSNI:        upstreamSNI,
 	}, nil
 }
 
@@ -322,6 +476,26 @@ func normalizeDomain(domain string) string {
 	domain = strings.TrimSpace(strings.ToLower(domain))
 	domain = strings.TrimSuffix(domain, ".")
 	return domain
+}
+
+func normalizeName(name string) string {
+	return strings.TrimSpace(strings.ToLower(name))
+}
+
+func validateRouteName(name string) error {
+	if name == "" {
+		return fmt.Errorf("must not be empty")
+	}
+
+	if len(name) > 127 {
+		return fmt.Errorf("must be 127 characters or fewer")
+	}
+
+	if !routeNamePattern.MatchString(name) {
+		return fmt.Errorf("may only contain lowercase letters, numbers, dots, underscores, and hyphens")
+	}
+
+	return nil
 }
 
 func validateDomain(domain string) error {
@@ -347,9 +521,29 @@ func validateDomain(domain string) error {
 	return nil
 }
 
+func validateUpstreamHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("must not be empty")
+	}
+
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+
+	return validateDomain(host)
+}
+
+func defaultPortForScheme(scheme string) int {
+	if scheme == "https" {
+		return 443
+	}
+
+	return 80
+}
+
 func sortRoutes(routes []Route) {
 	sort.Slice(routes, func(i, j int) bool {
-		return routes[i].Domain < routes[j].Domain
+		return routes[i].Name < routes[j].Name
 	})
 }
 
@@ -359,4 +553,67 @@ func (m *Manager) describeRoutes(ctx context.Context, routes []Route) ([]RouteDe
 	}
 
 	return DetailsFromRoutes(routes), nil
+}
+
+func (m *Manager) loadRoutes(ctx context.Context) ([]Route, error) {
+	routes, err := m.store.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	normalizedRoutes := make([]Route, 0, len(routes))
+	for _, route := range routes {
+		normalized, err := normalizeLoadedRoute(route)
+		if err != nil {
+			return nil, err
+		}
+
+		normalizedRoutes = append(normalizedRoutes, normalized)
+	}
+
+	sortRoutes(normalizedRoutes)
+	return normalizedRoutes, nil
+}
+
+func normalizeLoadedRoute(route Route) (Route, error) {
+	normalized, err := normalizeAndValidate(UpsertRouteInput{
+		Name:               route.Name,
+		FrontendMode:       route.FrontendMode,
+		Domain:             route.Domain,
+		ListenIP:           route.ListenIP,
+		ListenPort:         route.ListenPort,
+		EnableTLS:          route.EnableTLS,
+		UpstreamMode:       route.UpstreamMode,
+		TargetIP:           route.TargetIP,
+		TargetHost:         route.TargetHost,
+		TargetPort:         route.TargetPort,
+		TargetScheme:       route.TargetScheme,
+		UpstreamHostHeader: route.UpstreamHostHeader,
+		UpstreamSNI:        route.UpstreamSNI,
+	})
+	if err != nil {
+		return Route{}, err
+	}
+
+	return routeFromInput(normalized, route.CreatedAt, route.UpdatedAt), nil
+}
+
+func routeFromInput(input UpsertRouteInput, createdAt, updatedAt time.Time) Route {
+	return Route{
+		Name:               input.Name,
+		FrontendMode:       input.FrontendMode,
+		Domain:             input.Domain,
+		ListenIP:           input.ListenIP,
+		ListenPort:         input.ListenPort,
+		EnableTLS:          input.EnableTLS,
+		UpstreamMode:       input.UpstreamMode,
+		TargetIP:           input.TargetIP,
+		TargetHost:         input.TargetHost,
+		TargetPort:         input.TargetPort,
+		TargetScheme:       input.TargetScheme,
+		UpstreamHostHeader: input.UpstreamHostHeader,
+		UpstreamSNI:        input.UpstreamSNI,
+		CreatedAt:          createdAt,
+		UpdatedAt:          updatedAt,
+	}
 }

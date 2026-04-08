@@ -12,6 +12,8 @@ SKIP_DEP_INSTALL="${REPROXY_SKIP_DEP_INSTALL:-0}"
 SKIP_START="${REPROXY_SKIP_START:-0}"
 INSTALL_NGINX="${REPROXY_INSTALL_NGINX:-1}"
 INSTALL_CERTBOT="${REPROXY_INSTALL_CERTBOT:-1}"
+INSTALL_CERTBOT_CLOUDFLARE="${REPROXY_INSTALL_CERTBOT_CLOUDFLARE:-0}"
+CERT_PROVIDER="${REPROXY_CERT_PROVIDER:-}"
 
 require_root_if_needed() {
   if [[ "${EUID}" -eq 0 ]]; then
@@ -112,6 +114,17 @@ ensure_dependencies() {
     packages+=("certbot")
   fi
 
+  if [[ "${INSTALL_CERTBOT_CLOUDFLARE}" == "1" || "${CERT_PROVIDER}" == "cloudflare" ]]; then
+    case "${manager}" in
+      apt|dnf|yum)
+        packages+=("python3-certbot-dns-cloudflare")
+        ;;
+      pacman)
+        packages+=("certbot-dns-cloudflare")
+        ;;
+    esac
+  fi
+
   install_packages "${manager}" "${packages[@]}"
 }
 
@@ -175,6 +188,7 @@ Environment file: ${INSTALL_DIR}/deployments/env/reproxy.env
 Quick checks:
 - systemctl status reproxy
 - curl http://127.0.0.1:8080/status
+- ${INSTALL_DIR}/bin/reproxy-panel.sh
 EOF
 }
 

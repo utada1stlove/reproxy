@@ -54,7 +54,7 @@ func (s *statusSyncer) SyncStatus() SyncStatus {
 	}
 }
 
-func TestUpsertRouteCreatesAndUpdatesByDomain(t *testing.T) {
+func TestUpsertRouteCreatesAndUpdatesByName(t *testing.T) {
 	store := &memoryStore{}
 	syncer := &captureSyncer{}
 	manager := NewManager(store, syncer)
@@ -72,11 +72,16 @@ func TestUpsertRouteCreatesAndUpdatesByDomain(t *testing.T) {
 		t.Fatalf("expected first upsert to create route")
 	}
 
-	if createdRoute.Domain != "example.com" {
-		t.Fatalf("expected normalized domain, got %q", createdRoute.Domain)
+	if createdRoute.Name != "example.com" {
+		t.Fatalf("expected normalized route name, got %q", createdRoute.Name)
+	}
+
+	if createdRoute.FrontendMode != FrontendModeDomain {
+		t.Fatalf("expected domain mode, got %q", createdRoute.FrontendMode)
 	}
 
 	updatedRoute, created, err := manager.UpsertRoute(context.Background(), UpsertRouteInput{
+		Name:       "example.com",
 		Domain:     "example.com",
 		TargetIP:   "10.0.0.11",
 		TargetPort: 9090,
@@ -102,13 +107,44 @@ func TestUpsertRouteCreatesAndUpdatesByDomain(t *testing.T) {
 	}
 }
 
+func TestUpsertRouteSupportsPortFrontendAndHostUpstream(t *testing.T) {
+	manager := NewManager(&memoryStore{}, &captureSyncer{})
+
+	route, created, err := manager.UpsertRoute(context.Background(), UpsertRouteInput{
+		Name:         "hv-port",
+		FrontendMode: FrontendModePort,
+		ListenPort:   8080,
+		UpstreamMode: UpstreamModeHost,
+		TargetHost:   "hentaiverse.org",
+		TargetScheme: "https",
+	})
+	if err != nil {
+		t.Fatalf("create port route: %v", err)
+	}
+
+	if !created {
+		t.Fatalf("expected route creation")
+	}
+
+	if route.TargetPort != 443 {
+		t.Fatalf("expected default https port 443, got %d", route.TargetPort)
+	}
+
+	if route.UpstreamHostHeader != "hentaiverse.org" {
+		t.Fatalf("expected upstream host header to default to target host, got %q", route.UpstreamHostHeader)
+	}
+}
+
 func TestUpsertRouteRejectsInvalidInput(t *testing.T) {
 	manager := NewManager(&memoryStore{}, &captureSyncer{})
 
 	_, _, err := manager.UpsertRoute(context.Background(), UpsertRouteInput{
-		Domain:     "bad_domain",
-		TargetIP:   "not-an-ip",
-		TargetPort: 70000,
+		Name:         "bad-route",
+		FrontendMode: FrontendModePort,
+		ListenPort:   70000,
+		UpstreamMode: UpstreamModeHost,
+		TargetHost:   "bad_domain",
+		TargetScheme: "ftp",
 	})
 	if err == nil {
 		t.Fatalf("expected validation error")
@@ -123,8 +159,8 @@ func TestUpsertRouteRejectsInvalidInput(t *testing.T) {
 func TestDeleteRouteRemovesRouteAndSyncs(t *testing.T) {
 	store := &memoryStore{
 		routes: []Route{
-			{Domain: "keep.example.com", TargetIP: "10.0.0.10", TargetPort: 8080},
-			{Domain: "drop.example.com", TargetIP: "10.0.0.11", TargetPort: 8081},
+			{Name: "keep.example.com", FrontendMode: FrontendModeDomain, Domain: "keep.example.com", UpstreamMode: UpstreamModeIPPort, TargetIP: "10.0.0.10", TargetPort: 8080},
+			{Name: "drop.example.com", FrontendMode: FrontendModeDomain, Domain: "drop.example.com", UpstreamMode: UpstreamModeIPPort, TargetIP: "10.0.0.11", TargetPort: 8081},
 		},
 	}
 	syncer := &captureSyncer{}
@@ -143,11 +179,11 @@ func TestDeleteRouteRemovesRouteAndSyncs(t *testing.T) {
 		t.Fatalf("expected 1 route after delete, got %d", len(store.routes))
 	}
 
-	if store.routes[0].Domain != "keep.example.com" {
-		t.Fatalf("expected keep.example.com to remain, got %q", store.routes[0].Domain)
+	if store.routes[0].Name != "keep.example.com" {
+		t.Fatalf("expected keep.example.com to remain, got %q", store.routes[0].Name)
 	}
 
-	if len(syncer.routes) != 1 || syncer.routes[0].Domain != "keep.example.com" {
+	if len(syncer.routes) != 1 || syncer.routes[0].Name != "keep.example.com" {
 		t.Fatalf("expected syncer to receive remaining route set")
 	}
 }
@@ -155,8 +191,8 @@ func TestDeleteRouteRemovesRouteAndSyncs(t *testing.T) {
 func TestStatusIncludesTLSCounts(t *testing.T) {
 	store := &memoryStore{
 		routes: []Route{
-			{Domain: "plain.example.com", TargetIP: "10.0.0.10", TargetPort: 8080},
-			{Domain: "tls.example.com", TargetIP: "10.0.0.11", TargetPort: 8443},
+			{Name: "plain.example.com", FrontendMode: FrontendModeDomain, Domain: "plain.example.com", UpstreamMode: UpstreamModeIPPort, TargetIP: "10.0.0.10", TargetPort: 8080},
+			{Name: "tls.example.com", FrontendMode: FrontendModeDomain, Domain: "tls.example.com", UpstreamMode: UpstreamModeIPPort, TargetIP: "10.0.0.11", TargetPort: 8443},
 		},
 	}
 

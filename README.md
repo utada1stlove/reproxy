@@ -1,13 +1,20 @@
 # reproxy
 
-`reproxy` 是一个面向入口机的轻量级 edge-proxy-manager。用户只需要提供域名、目标 IP、目标端口，系统就会持久化路由定义、生成 Nginx 反向代理配置，并在配置好证书钩子后支持 HTTPS 自动化。
+`reproxy` 是一个面向入口机的轻量级 edge-proxy-manager。它现在同时支持两类入口：
+- 域名入口：`domain -> backend`
+- 端口入口：`server_ip:port -> upstream`
+
+并支持两类上游：
+- `IP:port`
+- `HTTP/HTTPS host`
 
 ## 项目定位
 
 MVP 只解决最核心的一件事：
-- 把“域名 -> 后端 IP:端口”的映射可靠地落盘
+- 把“域名或端口监听 -> 上游目标”的映射可靠地落盘
 - 把这份映射自动转换成可运维、可审查的 Nginx 配置
 - 给 HTTPS 留出自动化接口，但不把 ACME 协议本身塞进管理器里
+- 把浏览器观察和 SSH 变更操作分开，减少后台复杂度
 
 当前实现遵循几个原则：
 - 轻量优先：Go 单二进制，标准库实现
@@ -28,10 +35,13 @@ MVP 只解决最核心的一件事：
    根据路由定义生成 `deployments/nginx/reproxy.conf`。
 
 4. HTTPS 自动化钩子
-   通过可选的 `REPROXY_CERT_COMMAND_TEMPLATE` 调用外部 ACME 工具，例如 `certbot`。
+   通过可选的 `REPROXY_CERT_COMMAND_TEMPLATE` 调用外部 ACME 工具，或直接走内置 Cloudflare DNS challenge 路径。
 
 5. Nginx 校验与 reload 钩子
    通过可选的 `REPROXY_VALIDATE_COMMAND` 先做配置预检查，再通过 `REPROXY_RELOAD_COMMAND` 触发 reload。
+
+6. Web 只读面板 + SSH 菜单面板
+   浏览器面板负责看状态和路由，SSH 菜单脚本负责新增、修改和删除。
 
 运行时流程：
 
@@ -41,9 +51,9 @@ MVP 只解决最核心的一件事：
 4. 生成 `deployments/nginx/reproxy.conf`
 5. 如已配置，则执行证书申请命令、Nginx 配置校验和 reload 命令
 6. 记录最近一次同步、校验、reload、证书申请状态
-7. 对外暴露 `/healthz`、`/status` 与 `/routes`
+7. 对外暴露 `/healthz`、`/status`、`/routes` 与 `/panel/`
 
-当证书未就绪时，MVP 会先生成 HTTP server block，并保留 ACME challenge 路径；证书文件存在后，会自动生成 443 server block，并把 80 跳转到 HTTPS。
+当证书未就绪时，域名路由会先生成 HTTP server block，并保留 challenge 所需路径；证书文件存在后，会自动生成 443 server block，并把 80 跳转到 HTTPS。端口监听路由则直接生成指定端口的反向代理配置。
 
 ## 目录结构
 
@@ -81,6 +91,13 @@ curl -fsSL https://raw.githubusercontent.com/utada1stlove/reproxy/main/deploymen
 ```bash
 curl -fsSL https://raw.githubusercontent.com/utada1stlove/reproxy/main/deployments/bootstrap.sh | \
   sudo env REPROXY_REPO_REF=main REPROXY_INSTALL_DIR=/opt/reproxy bash
+```
+
+如果你准备使用 Cloudflare DNS challenge，可以在安装时直接带上：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/utada1stlove/reproxy/main/deployments/bootstrap.sh | \
+  sudo env REPROXY_CERT_PROVIDER=cloudflare REPROXY_INSTALL_CERTBOT_CLOUDFLARE=1 bash
 ```
 
 如果你只想安装但先不启动服务：
@@ -133,12 +150,21 @@ export REPROXY_NGINX_CONFIG_PATH=./deployments/nginx/reproxy.conf
 export REPROXY_ACME_WEBROOT=/tmp/reproxy-acme
 export REPROXY_CERTS_DIR=/etc/letsencrypt/live
 export REPROXY_ADMIN_EMAIL=ops@example.com
-export REPROXY_CERT_COMMAND_TEMPLATE='certbot certonly --webroot -w {{.Webroot}} -d {{.Domain}} --email {{.Email}} --agree-tos --non-interactive'
+export REPROXY_CERT_PROVIDER=cloudflare
+export REPROXY_CLOUDFLARE_API_TOKEN=replace-with-your-token
+export REPROXY_CLOUDFLARE_CREDENTIALS_PATH=/etc/letsencrypt/cloudflare.ini
 export REPROXY_VALIDATE_COMMAND='nginx -t'
 export REPROXY_RELOAD_COMMAND='nginx -s reload'
 ```
 
-本地只做骨架验证时，可以先不设置 `REPROXY_CERT_COMMAND_TEMPLATE`、`REPROXY_VALIDATE_COMMAND` 和 `REPROXY_RELOAD_COMMAND`。这样系统仍然会生成 HTTP 配置，只是不自动申请证书，也不自动校验和 reload Nginx。
+如果你不想使用 Cloudflare 内置路径，也可以改回自定义证书命令：
+
+```bash
+export REPROXY_CERT_PROVIDER=
+export REPROXY_CERT_COMMAND_TEMPLATE='certbot certonly --webroot -w {{.Webroot}} -d {{.Domain}} --email {{.Email}} --agree-tos --non-interactive'
+```
+
+本地只做骨架验证时，可以先不设置证书相关变量、`REPROXY_VALIDATE_COMMAND` 和 `REPROXY_RELOAD_COMMAND`。这样系统仍然会生成配置，只是不自动申请证书，也不自动校验和 reload Nginx。
 
 ### 3. Nginx 接入方式
 
@@ -159,13 +185,26 @@ http://127.0.0.1:8080/panel/
 ```
 
 面板内支持：
-- 刷新服务和路由状态
-- 新增路由
-- 修改已有路由
-- 删除路由
+- 查看服务状态
+- 查看全部路由
 - 查看 TLS 就绪情况和最近同步状态
+- 查看每条路由的监听方式和上游方式
 
 根路径 `/` 会自动跳转到 `/panel/`。
+
+真正的增删改，请从 SSH 执行：
+
+```bash
+/opt/reproxy/bin/reproxy-panel.sh
+```
+
+这个 SSH 菜单脚本支持：
+- 查看状态
+- 查看路由
+- 新增域名路由
+- 新增端口监听路由
+- 更新路由
+- 删除路由
 
 ## API
 
@@ -194,24 +233,29 @@ curl http://127.0.0.1:8080/routes
 ```
 
 现在 `GET /routes` 会同时返回：
-- 路由基础字段
-- `tls_ready`
+- 路由名
+- 前端模式：`domain` 或 `port`
+- 上游模式：`ip_port` 或 `host`
+- TLS 就绪状态
 - 当前证书路径和私钥路径
 
 ### 查看单个路由
 
 ```bash
-curl http://127.0.0.1:8080/routes/demo.example.com
+curl http://127.0.0.1:8080/routes/demo-route
 ```
 
 ### 更新单个路由
 
 ```bash
-curl -X PUT http://127.0.0.1:8080/routes/demo.example.com \
+curl -X PUT http://127.0.0.1:8080/routes/demo-route \
   -H 'Content-Type: application/json' \
   -d '{
-    "target_ip": "10.0.0.24",
-    "target_port": 9090
+    "frontend_mode": "domain",
+    "domain": "demo.example.com",
+    "upstream_mode": "host",
+    "target_host": "hentaiverse.org",
+    "target_scheme": "https"
   }'
 ```
 
@@ -221,20 +265,59 @@ curl -X PUT http://127.0.0.1:8080/routes/demo.example.com \
 curl -X POST http://127.0.0.1:8080/routes \
   -H 'Content-Type: application/json' \
   -d '{
+    "name": "demo.example.com",
+    "frontend_mode": "domain",
     "domain": "demo.example.com",
+    "upstream_mode": "ip_port",
     "target_ip": "10.0.0.12",
     "target_port": 8080
   }'
 ```
 
-`POST /routes` 在 MVP 中按域名做 upsert：
-- 域名不存在时创建
-- 域名已存在时更新目标 IP 和端口
+`POST /routes` 在当前实现中按 `name` 做 upsert：
+- `name` 不存在时创建
+- `name` 已存在时覆盖更新该路由
+
+### 创建域名路由
+
+```bash
+curl -X POST http://127.0.0.1:8080/routes \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "demo-route",
+    "frontend_mode": "domain",
+    "domain": "demo.example.com",
+    "upstream_mode": "ip_port",
+    "target_ip": "10.0.0.12",
+    "target_port": 8080
+  }'
+```
+
+### 创建端口监听路由
+
+```bash
+curl -X POST http://127.0.0.1:8080/routes \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "hv-port",
+    "frontend_mode": "port",
+    "listen_port": 8080,
+    "upstream_mode": "host",
+    "target_host": "hentaiverse.org",
+    "target_scheme": "https"
+  }'
+```
+
+这会生成类似：
+
+```text
+http://server_ip:8080 -> https://hentaiverse.org
+```
 
 ### 删除路由
 
 ```bash
-curl -X DELETE http://127.0.0.1:8080/routes/demo.example.com
+curl -X DELETE http://127.0.0.1:8080/routes/demo-route
 ```
 
 删除成功后，系统会重新生成 Nginx 配置，并在已配置的情况下继续执行校验和 reload。
@@ -245,11 +328,13 @@ curl -X DELETE http://127.0.0.1:8080/routes/demo.example.com
 - 环境文件样例：`deployments/env/reproxy.env.example`
 - 安装脚本：`deployments/install.sh`
 - GitHub bootstrap 脚本：`deployments/bootstrap.sh`
+- SSH 菜单面板：`deployments/reproxy-panel.sh`
 - 卸载脚本：`deployments/uninstall.sh`
 - Nginx include 样例：`deployments/nginx/reproxy.http.include.example`
 
 安装脚本会优先复用现成的 `bin/reproxy`；如果不存在，则使用本地 Go 工具链直接构建再安装。
 GitHub bootstrap 脚本会先拉源码，再调用安装脚本，并在默认情况下启动 systemd 服务。
+安装后会同时放下 `/opt/reproxy/bin/reproxy-panel.sh` 作为 SSH 交互式菜单入口。
 
 建议部署步骤：
 
@@ -283,9 +368,12 @@ sudo REPROXY_KEEP_STATE=1 bash deployments/uninstall.sh
 - `REPROXY_ACME_WEBROOT`: ACME challenge 目录，默认 `/var/www/reproxy-acme`
 - `REPROXY_CERTS_DIR`: 证书目录根路径，默认 `/etc/letsencrypt/live`
 - `REPROXY_ADMIN_EMAIL`: 证书申请邮箱
+- `REPROXY_CERT_PROVIDER`: 证书提供模式，当前支持 `cloudflare`
 - `REPROXY_CERT_COMMAND_TEMPLATE`: 证书申请命令模板
 - `REPROXY_CERT_FILE_TEMPLATE`: 证书文件模板，默认 `{{.CertsDir}}/{{.Domain}}/fullchain.pem`
 - `REPROXY_CERT_KEY_TEMPLATE`: 私钥文件模板，默认 `{{.CertsDir}}/{{.Domain}}/privkey.pem`
+- `REPROXY_CLOUDFLARE_API_TOKEN`: Cloudflare DNS challenge token
+- `REPROXY_CLOUDFLARE_CREDENTIALS_PATH`: Cloudflare 凭证文件路径
 - `REPROXY_VALIDATE_COMMAND`: reload 前的校验命令，例如 `nginx -t`
 - `REPROXY_RELOAD_COMMAND`: Nginx 重载命令
 
@@ -296,9 +384,10 @@ sudo REPROXY_KEEP_STATE=1 bash deployments/uninstall.sh
 - 默认证书路径按 `certbot` 目录结构设计
 - HTTPS 自动化依赖外部 ACME 工具，而不是内建实现
 - 当前同步状态保存在进程内存中，进程重启后会从新的同步周期重新统计
+- Web 面板当前是只读的，增删改由 SSH 菜单完成
 
 ## 后续待办方向
 
-- 支持更丰富的反向代理参数，例如 header、path、健康检查
+- 支持更丰富的反向代理参数，例如 path、健康检查
 - 支持 `nginx -t` 失败时更细粒度的错误回传
 - 增加认证和审计日志

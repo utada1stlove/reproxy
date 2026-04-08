@@ -39,10 +39,11 @@ type tlsMaterial struct {
 }
 
 type templateData struct {
-	Domain   string
-	Email    string
-	Webroot  string
-	CertsDir string
+	Domain                    string
+	Email                     string
+	Webroot                   string
+	CertsDir                  string
+	CloudflareCredentialsPath string
 }
 
 func NewSyncer(config runtimecfg.Config) (*Syncer, error) {
@@ -56,9 +57,14 @@ func NewSyncer(config runtimecfg.Config) (*Syncer, error) {
 		return nil, err
 	}
 
+	commandTemplate := strings.TrimSpace(config.CertCommandTemplate)
+	if commandTemplate == "" && config.CertProvider == "cloudflare" {
+		commandTemplate = "certbot certonly --dns-cloudflare --dns-cloudflare-credentials {{.CloudflareCredentialsPath}} -d {{.Domain}} --email {{.Email}} --agree-tos --non-interactive --keep-until-expiring"
+	}
+
 	var certCommandTemplate *template.Template
-	if strings.TrimSpace(config.CertCommandTemplate) != "" {
-		certCommandTemplate, err = parseTemplate("cert-command", config.CertCommandTemplate)
+	if commandTemplate != "" {
+		certCommandTemplate, err = parseTemplate("cert-command", commandTemplate)
 		if err != nil {
 			return nil, err
 		}
@@ -124,20 +130,30 @@ func (s *Syncer) DescribeRoutes(ctx context.Context, routes []app.Route) ([]app.
 
 	details := make([]app.RouteDetails, 0, len(routes))
 	for _, route := range routes {
-		material, err := s.materialFor(route.Domain)
+		material, err := s.materialFor(route)
 		if err != nil {
 			return nil, err
 		}
 
 		details = append(details, app.RouteDetails{
-			Domain:     route.Domain,
-			TargetIP:   route.TargetIP,
-			TargetPort: route.TargetPort,
-			CreatedAt:  route.CreatedAt,
-			UpdatedAt:  route.UpdatedAt,
-			TLSReady:   material.Ready,
-			CertPath:   material.CertPath,
-			KeyPath:    material.KeyPath,
+			Name:               route.Name,
+			FrontendMode:       route.FrontendMode,
+			Domain:             route.Domain,
+			ListenIP:           route.ListenIP,
+			ListenPort:         route.ListenPort,
+			EnableTLS:          route.EnableTLS,
+			UpstreamMode:       route.UpstreamMode,
+			TargetIP:           route.TargetIP,
+			TargetHost:         route.TargetHost,
+			TargetPort:         route.TargetPort,
+			TargetScheme:       route.TargetScheme,
+			UpstreamHostHeader: route.UpstreamHostHeader,
+			UpstreamSNI:        route.UpstreamSNI,
+			CreatedAt:          route.CreatedAt,
+			UpdatedAt:          route.UpdatedAt,
+			TLSReady:           material.Ready,
+			CertPath:           material.CertPath,
+			KeyPath:            material.KeyPath,
 		})
 	}
 
@@ -166,23 +182,21 @@ func (s *Syncer) buildSites(ctx context.Context, routes []app.Route) ([]Site, er
 }
 
 func (s *Syncer) buildSite(ctx context.Context, route app.Route) (Site, error) {
-	material, err := s.materialFor(route.Domain)
+	material, err := s.materialFor(route)
 	if err != nil {
 		return Site{}, err
 	}
 
-	if !material.Ready && s.certCommandTemplate != nil {
-		if strings.TrimSpace(s.config.ACMEWebroot) != "" {
-			if err := os.MkdirAll(s.config.ACMEWebroot, 0o755); err != nil {
-				return Site{}, fmt.Errorf("prepare ACME webroot: %w", err)
-			}
+	if shouldEnsureTLS(route) && !material.Ready && s.certCommandTemplate != nil {
+		if err := s.prepareCertificateDependencies(); err != nil {
+			return Site{}, err
 		}
 
 		if err := s.ensureCertificate(ctx, route.Domain); err != nil {
 			return Site{}, err
 		}
 
-		material, err = s.materialFor(route.Domain)
+		material, err = s.materialFor(route)
 		if err != nil {
 			return Site{}, err
 		}
@@ -196,8 +210,12 @@ func (s *Syncer) buildSite(ctx context.Context, route app.Route) (Site, error) {
 	}, nil
 }
 
-func (s *Syncer) materialFor(domain string) (tlsMaterial, error) {
-	data := s.templateData(domain)
+func (s *Syncer) materialFor(route app.Route) (tlsMaterial, error) {
+	if !shouldEnsureTLS(route) {
+		return tlsMaterial{}, nil
+	}
+
+	data := s.templateData(route.Domain)
 
 	certPath, err := renderTemplate(s.certFileTemplate, data)
 	if err != nil {
@@ -214,6 +232,31 @@ func (s *Syncer) materialFor(domain string) (tlsMaterial, error) {
 		KeyPath:  keyPath,
 		Ready:    fileExists(certPath) && fileExists(keyPath),
 	}, nil
+}
+
+func shouldEnsureTLS(route app.Route) bool {
+	return route.FrontendMode == app.FrontendModeDomain && route.EnableTLS && strings.TrimSpace(route.Domain) != ""
+}
+
+func (s *Syncer) prepareCertificateDependencies() error {
+	if strings.TrimSpace(s.config.ACMEWebroot) != "" {
+		if err := os.MkdirAll(s.config.ACMEWebroot, 0o755); err != nil {
+			return fmt.Errorf("prepare ACME webroot: %w", err)
+		}
+	}
+
+	if s.config.CertProvider == "cloudflare" {
+		if strings.TrimSpace(s.config.CloudflareAPIToken) == "" {
+			return fmt.Errorf("cloudflare cert provider requires REPROXY_CLOUDFLARE_API_TOKEN")
+		}
+
+		content := fmt.Sprintf("dns_cloudflare_api_token = %s\n", s.config.CloudflareAPIToken)
+		if err := writeSensitiveFile(s.config.CloudflareCredentialsPath, []byte(content), 0o600); err != nil {
+			return fmt.Errorf("write cloudflare credentials: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Syncer) ensureCertificate(ctx context.Context, domain string) error {
@@ -308,10 +351,11 @@ func (s *Syncer) runValidate(ctx context.Context) error {
 
 func (s *Syncer) templateData(domain string) templateData {
 	return templateData{
-		Domain:   domain,
-		Email:    s.config.AdminEmail,
-		Webroot:  s.config.ACMEWebroot,
-		CertsDir: s.config.CertsDir,
+		Domain:                    domain,
+		Email:                     s.config.AdminEmail,
+		Webroot:                   s.config.ACMEWebroot,
+		CertsDir:                  s.config.CertsDir,
+		CloudflareCredentialsPath: s.config.CloudflareCredentialsPath,
 	}
 }
 
@@ -352,6 +396,36 @@ func writeFileAtomically(path string, content []byte) error {
 	}
 
 	if err := os.Chmod(tempPath, 0o644); err != nil {
+		return err
+	}
+
+	return os.Rename(tempPath, path)
+}
+
+func writeSensitiveFile(path string, content []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	tempFile, err := os.CreateTemp(dir, "secret-*")
+	if err != nil {
+		return err
+	}
+
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
+	if _, err := tempFile.Write(content); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Chmod(tempPath, mode); err != nil {
 		return err
 	}
 

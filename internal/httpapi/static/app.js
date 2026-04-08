@@ -1,16 +1,5 @@
-const state = {
-  editingDomain: null,
-  routes: [],
-};
-
 const elements = {
   refreshButton: document.getElementById("refresh-all"),
-  resetButton: document.getElementById("reset-form"),
-  cancelEditButton: document.getElementById("cancel-edit"),
-  form: document.getElementById("route-form"),
-  formTitle: document.getElementById("form-title"),
-  submitButton: document.getElementById("submit-button"),
-  notice: document.getElementById("form-notice"),
   syncErrorBox: document.getElementById("sync-error-box"),
   routeCount: document.getElementById("route-count"),
   tlsCount: document.getElementById("tls-count"),
@@ -22,24 +11,16 @@ const elements = {
   lastCertificate: document.getElementById("last-certificate"),
   routeTableMeta: document.getElementById("route-table-meta"),
   routesBody: document.getElementById("routes-body"),
-  domain: document.getElementById("domain"),
-  targetIP: document.getElementById("target-ip"),
-  targetPort: document.getElementById("target-port"),
 };
 
 boot();
 
 function boot() {
-  elements.refreshButton.addEventListener("click", () => refreshAll(true));
-  elements.resetButton.addEventListener("click", resetForm);
-  elements.cancelEditButton.addEventListener("click", resetForm);
-  elements.form.addEventListener("submit", onSubmit);
-
-  resetForm();
-  refreshAll(false);
+  elements.refreshButton.addEventListener("click", refreshAll);
+  refreshAll();
 }
 
-async function refreshAll(showSuccess) {
+async function refreshAll() {
   try {
     const [statusPayload, routesPayload] = await Promise.all([
       requestJSON("/status"),
@@ -48,52 +29,8 @@ async function refreshAll(showSuccess) {
 
     renderStatus(statusPayload);
     renderRoutes(routesPayload.routes || []);
-
-    if (showSuccess) {
-      showNotice("Panel data refreshed.", "success");
-    }
   } catch (error) {
-    showNotice(error.message, "error");
-  }
-}
-
-async function onSubmit(event) {
-  event.preventDefault();
-
-  const payload = {
-    domain: elements.domain.value.trim(),
-    target_ip: elements.targetIP.value.trim(),
-    target_port: Number.parseInt(elements.targetPort.value, 10),
-  };
-
-  if (!payload.domain || !payload.target_ip || Number.isNaN(payload.target_port)) {
-    showNotice("Domain, target IP, and target port are required.", "warning");
-    return;
-  }
-
-  try {
-    let response;
-    if (state.editingDomain) {
-      response = await requestJSON(`/routes/${encodeURIComponent(state.editingDomain)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          target_ip: payload.target_ip,
-          target_port: payload.target_port,
-        }),
-      });
-      showNotice(`Updated ${response.route.domain}.`, "success");
-    } else {
-      response = await requestJSON("/routes", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      showNotice(`Saved ${response.route.domain}.`, "success");
-    }
-
-    resetForm();
-    await refreshAll(false);
-  } catch (error) {
-    showNotice(error.message, "error");
+    renderGlobalError(error.message);
   }
 }
 
@@ -132,88 +69,76 @@ function renderStatus(payload) {
 }
 
 function renderRoutes(routes) {
-  state.routes = routes;
   elements.routeTableMeta.textContent = `${routes.length} loaded`;
 
   if (routes.length === 0) {
-    elements.routesBody.innerHTML = `<tr><td colspan="5" class="empty-state">No routes yet. Create the first one from the form.</td></tr>`;
+    elements.routesBody.innerHTML = `<tr><td colspan="5" class="empty-state">No routes configured yet. Use the SSH menu to create the first one.</td></tr>`;
     return;
   }
 
   elements.routesBody.innerHTML = "";
   for (const route of routes) {
     const row = document.createElement("tr");
-
     row.innerHTML = `
       <td>
         <div class="route-domain">
-          <a href="https://${escapeHTML(route.domain)}" target="_blank" rel="noreferrer">${escapeHTML(route.domain)}</a>
-          <small>${escapeHTML(route.cert_path || "certificate pending")}</small>
+          <strong>${escapeHTML(route.name)}</strong>
+          <small>${escapeHTML(frontendSummary(route))}</small>
         </div>
       </td>
+      <td>${escapeHTML(frontendSummary(route))}</td>
       <td>
-        <div>${escapeHTML(route.target_ip)}:${escapeHTML(String(route.target_port))}</div>
-        <small class="target-meta">${escapeHTML(route.key_path || "no private key yet")}</small>
+        <div>${escapeHTML(upstreamSummary(route))}</div>
+        <small class="target-meta">${escapeHTML(extraUpstreamSummary(route))}</small>
       </td>
-      <td><span class="tls-pill ${route.tls_ready ? "ready" : "pending"}">${route.tls_ready ? "Ready" : "Pending"}</span></td>
+      <td><span class="tls-pill ${route.tls_ready ? "ready" : "pending"}">${route.tls_ready ? "Ready" : route.enable_tls ? "Pending" : "Off"}</span></td>
       <td>${escapeHTML(formatTimestamp(route.updated_at))}</td>
-      <td>
-        <div class="actions">
-          <button class="link-button" type="button" data-action="edit" data-domain="${encodeURIComponent(route.domain)}">Edit</button>
-          <button class="link-button danger" type="button" data-action="delete" data-domain="${encodeURIComponent(route.domain)}">Delete</button>
-        </div>
-      </td>
     `;
-
-    row.querySelector('[data-action="edit"]').addEventListener("click", () => beginEdit(route.domain));
-    row.querySelector('[data-action="delete"]').addEventListener("click", () => removeRoute(route.domain));
     elements.routesBody.appendChild(row);
   }
 }
 
-function beginEdit(domain) {
-  const route = state.routes.find((item) => item.domain === domain);
-  if (!route) {
-    showNotice(`Route ${domain} not found in current list.`, "warning");
-    return;
-  }
-
-  state.editingDomain = domain;
-  elements.formTitle.textContent = `Edit ${domain}`;
-  elements.submitButton.textContent = "Update Route";
-  elements.cancelEditButton.classList.remove("hidden");
-  elements.domain.readOnly = true;
-  elements.domain.value = route.domain;
-  elements.targetIP.value = route.target_ip;
-  elements.targetPort.value = String(route.target_port);
-  elements.domain.focus();
-}
-
-function resetForm() {
-  state.editingDomain = null;
-  elements.form.reset();
-  elements.formTitle.textContent = "Create Route";
-  elements.submitButton.textContent = "Create Route";
-  elements.cancelEditButton.classList.add("hidden");
-  elements.domain.readOnly = false;
-}
-
-async function removeRoute(domain) {
-  const confirmed = window.confirm(`Delete route ${domain}?`);
-  if (!confirmed) {
-    return;
-  }
-
-  try {
-    await requestJSON(`/routes/${encodeURIComponent(domain)}`, { method: "DELETE" });
-    if (state.editingDomain === domain) {
-      resetForm();
+function frontendSummary(route) {
+  if (route.frontend_mode === "port") {
+    if (route.listen_ip) {
+      return `${route.listen_ip}:${route.listen_port}`;
     }
-    showNotice(`Deleted ${domain}.`, "success");
-    await refreshAll(false);
-  } catch (error) {
-    showNotice(error.message, "error");
+    return `0.0.0.0:${route.listen_port}`;
   }
+
+  return route.domain || "-";
+}
+
+function upstreamSummary(route) {
+  if (route.upstream_mode === "host") {
+    return `${route.target_scheme || "http"}://${route.target_host}${suffixPort(route.target_scheme, route.target_port)}`;
+  }
+
+  return `${route.target_ip}:${route.target_port}`;
+}
+
+function extraUpstreamSummary(route) {
+  const extras = [];
+  if (route.upstream_host_header) {
+    extras.push(`Host=${route.upstream_host_header}`);
+  }
+  if (route.upstream_sni) {
+    extras.push(`SNI=${route.upstream_sni}`);
+  }
+  if (route.cert_path) {
+    extras.push(route.cert_path);
+  }
+  return extras.join(" | ") || "No extra upstream metadata";
+}
+
+function suffixPort(scheme, port) {
+  if (!port) {
+    return "";
+  }
+  if ((scheme === "http" && port === 80) || (scheme === "https" && port === 443)) {
+    return "";
+  }
+  return `:${port}`;
 }
 
 async function requestJSON(url, options = {}) {
@@ -233,10 +158,9 @@ async function requestJSON(url, options = {}) {
   return payload;
 }
 
-function showNotice(message, tone) {
-  elements.notice.className = `notice ${tone}`;
-  elements.notice.textContent = message;
-  elements.notice.classList.remove("hidden");
+function renderGlobalError(message) {
+  elements.syncErrorBox.classList.remove("hidden");
+  elements.syncErrorBox.textContent = message;
 }
 
 function formatTimestamp(value) {

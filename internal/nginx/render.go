@@ -6,12 +6,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/utada1stlove/reproxy/internal/app"
 )
 
 func Render(sites []Site, acmeWebroot string) string {
 	sortedSites := append([]Site(nil), sites...)
 	sort.Slice(sortedSites, func(i, j int) bool {
-		return sortedSites[i].Route.Domain < sortedSites[j].Route.Domain
+		return sortedSites[i].Route.Name < sortedSites[j].Route.Name
 	})
 
 	var builder strings.Builder
@@ -27,18 +29,22 @@ func Render(sites []Site, acmeWebroot string) string {
 			builder.WriteString("\n")
 		}
 
-		writeHTTPServerBlock(&builder, site, acmeWebroot)
-
-		if site.TLSReady {
-			builder.WriteString("\n")
-			writeHTTPSServerBlock(&builder, site)
+		switch site.Route.FrontendMode {
+		case app.FrontendModePort:
+			writePortServerBlock(&builder, site)
+		default:
+			writeDomainHTTPServerBlock(&builder, site, acmeWebroot)
+			if site.TLSReady {
+				builder.WriteString("\n")
+				writeDomainHTTPSServerBlock(&builder, site)
+			}
 		}
 	}
 
 	return builder.String()
 }
 
-func writeHTTPServerBlock(builder *strings.Builder, site Site, acmeWebroot string) {
+func writeDomainHTTPServerBlock(builder *strings.Builder, site Site, acmeWebroot string) {
 	builder.WriteString("server {\n")
 	builder.WriteString("    listen 80;\n")
 	builder.WriteString("    listen [::]:80;\n")
@@ -62,7 +68,7 @@ func writeHTTPServerBlock(builder *strings.Builder, site Site, acmeWebroot strin
 	builder.WriteString("}\n")
 }
 
-func writeHTTPSServerBlock(builder *strings.Builder, site Site) {
+func writeDomainHTTPSServerBlock(builder *strings.Builder, site Site) {
 	builder.WriteString("server {\n")
 	builder.WriteString("    listen 443 ssl http2;\n")
 	builder.WriteString("    listen [::]:443 ssl http2;\n")
@@ -73,15 +79,95 @@ func writeHTTPSServerBlock(builder *strings.Builder, site Site) {
 	builder.WriteString("}\n")
 }
 
+func writePortServerBlock(builder *strings.Builder, site Site) {
+	builder.WriteString("server {\n")
+
+	listenDirectives := portListenDirectives(site.Route.ListenIP, site.Route.ListenPort)
+	for _, directive := range listenDirectives {
+		builder.WriteString(fmt.Sprintf("    listen %s;\n", directive))
+	}
+
+	builder.WriteString("    server_name _;\n\n")
+	writeProxyLocation(builder, site)
+	builder.WriteString("}\n")
+}
+
 func writeProxyLocation(builder *strings.Builder, site Site) {
-	upstream := net.JoinHostPort(site.Route.TargetIP, strconv.Itoa(site.Route.TargetPort))
+	upstreamURL := upstreamURL(site.Route)
+	hostHeader := proxyHostHeader(site.Route)
 
 	builder.WriteString("    location / {\n")
-	builder.WriteString(fmt.Sprintf("        proxy_pass http://%s;\n", upstream))
+	builder.WriteString(fmt.Sprintf("        proxy_pass %s;\n", upstreamURL))
 	builder.WriteString("        proxy_http_version 1.1;\n")
-	builder.WriteString("        proxy_set_header Host $host;\n")
+	builder.WriteString(fmt.Sprintf("        proxy_set_header Host %s;\n", hostHeader))
 	builder.WriteString("        proxy_set_header X-Real-IP $remote_addr;\n")
 	builder.WriteString("        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n")
 	builder.WriteString("        proxy_set_header X-Forwarded-Proto $scheme;\n")
+
+	if site.Route.UpstreamMode == app.UpstreamModeHost && site.Route.TargetScheme == "https" {
+		builder.WriteString("        proxy_ssl_server_name on;\n")
+		if strings.TrimSpace(site.Route.UpstreamSNI) != "" {
+			builder.WriteString(fmt.Sprintf("        proxy_ssl_name %s;\n", site.Route.UpstreamSNI))
+		}
+	}
+
 	builder.WriteString("    }\n")
+}
+
+func portListenDirectives(listenIP string, listenPort int) []string {
+	if listenIP == "" {
+		return []string{
+			strconv.Itoa(listenPort),
+			fmt.Sprintf("[::]:%d", listenPort),
+		}
+	}
+
+	if parsedIP := net.ParseIP(listenIP); parsedIP != nil && parsedIP.To4() == nil {
+		return []string{fmt.Sprintf("[%s]:%d", listenIP, listenPort)}
+	}
+
+	return []string{fmt.Sprintf("%s:%d", listenIP, listenPort)}
+}
+
+func upstreamURL(route app.Route) string {
+	switch route.UpstreamMode {
+	case app.UpstreamModeHost:
+		hostPort := route.TargetHost
+		if route.TargetPort > 0 && route.TargetPort != defaultPortForScheme(route.TargetScheme) {
+			hostPort = net.JoinHostPort(route.TargetHost, strconv.Itoa(route.TargetPort))
+		}
+
+		if route.TargetPort == defaultPortForScheme(route.TargetScheme) {
+			return fmt.Sprintf("%s://%s", route.TargetScheme, route.TargetHost)
+		}
+
+		return fmt.Sprintf("%s://%s", route.TargetScheme, hostPort)
+	default:
+		scheme := route.TargetScheme
+		if scheme == "" {
+			scheme = "http"
+		}
+
+		return fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(route.TargetIP, strconv.Itoa(route.TargetPort)))
+	}
+}
+
+func proxyHostHeader(route app.Route) string {
+	if strings.TrimSpace(route.UpstreamHostHeader) != "" {
+		return route.UpstreamHostHeader
+	}
+
+	if route.UpstreamMode == app.UpstreamModeHost {
+		return route.TargetHost
+	}
+
+	return "$host"
+}
+
+func defaultPortForScheme(scheme string) int {
+	if scheme == "https" {
+		return 443
+	}
+
+	return 80
 }
